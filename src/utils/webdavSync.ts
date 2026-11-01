@@ -3,11 +3,30 @@ import { useResumeStore } from "@/store/useResumeStore";
 import { getConfig, storeConfig } from "@/utils/fileSystem";
 import {
   WEBDAV_LAST_SYNC_KEY,
+  buildWebDAVHistoryFileName,
+  type WebDAVBackupEntry,
   type WebDAVConfig,
   type WebDAVLastSync,
+  deleteWebDAVFileByName,
   getWebDAVFile,
+  getWebDAVFileByName,
+  listWebDAVBackups,
   putWebDAVFile,
+  putWebDAVFileByName,
 } from "@/lib/webdav";
+
+export const WEBDAV_HISTORY_LIMIT_DEFAULT = 10;
+const WEBDAV_HISTORY_LIMIT_MIN = 5;
+const WEBDAV_HISTORY_LIMIT_MAX = 50;
+
+export const clampWebDAVHistoryLimit = (value: unknown): number => {
+  const parsed =
+    typeof value === "number"
+      ? Math.round(value)
+      : Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) return WEBDAV_HISTORY_LIMIT_DEFAULT;
+  return Math.min(WEBDAV_HISTORY_LIMIT_MAX, Math.max(WEBDAV_HISTORY_LIMIT_MIN, parsed));
+};
 
 interface WebDAVSnapshot {
   app: "magic-resume";
@@ -45,6 +64,28 @@ const isWebDAVSnapshot = (value: unknown): value is WebDAVSnapshot => {
   if (typeof snapshot.exportedAt !== "string") return false;
   if (!snapshot.resumes || typeof snapshot.resumes !== "object") return false;
   return true;
+};
+
+const parseSnapshotFile = (content: string): WebDAVSnapshot | null => {
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    return isWebDAVSnapshot(parsed) ? parsed : null;
+  } catch (_error) {
+    return null;
+  }
+};
+
+const normalizeSnapshotResume = (resume: ResumeData, fallbackIso: string): ResumeData => {
+  const next = { ...resume };
+  // 云端文件可能来自旧版本或被手动编辑过，补全必需的时间字段，
+  // 避免列表页格式化 undefined 日期时报错。
+  if (typeof next.updatedAt !== "string" || Number.isNaN(Date.parse(next.updatedAt))) {
+    next.updatedAt = fallbackIso;
+  }
+  if (typeof next.createdAt !== "string" || Number.isNaN(Date.parse(next.createdAt))) {
+    next.createdAt = next.updatedAt;
+  }
+  return next;
 };
 
 export const buildWebDAVSnapshot = (): WebDAVSnapshot => {
@@ -122,7 +163,32 @@ export const pushResumesToWebDAV = async (
     pushedAt: snapshot.exportedAt,
     remoteExportedAt: snapshot.exportedAt,
   });
+
+  // 历史备份的写入和清理失败不影响推送结果
+  try {
+    await maintainWebDAVHistory(config, content);
+  } catch (error) {
+    console.warn("WebDAV history maintenance failed:", error);
+  }
+
   return { status: "success", exportedAt: snapshot.exportedAt };
+};
+
+// 每次推送生成一份带时间戳的历史快照，并把数量裁剪到配置的上限内
+const maintainWebDAVHistory = async (config: WebDAVConfig, content: string) => {
+  const limit = clampWebDAVHistoryLimit(config.historyLimit);
+
+  await putWebDAVFileByName(config, buildWebDAVHistoryFileName(), content);
+
+  const list = await listWebDAVBackups(config);
+  if (!list.ok || !list.entries) return;
+
+  for (const entry of list.entries.slice(limit)) {
+    const deleted = await deleteWebDAVFileByName(config, entry.fileName);
+    if (!deleted.ok) {
+      console.warn(`Failed to prune old WebDAV backup "${entry.fileName}":`, deleted.message);
+    }
+  }
 };
 
 export type PullWebDAVResult =
@@ -141,18 +207,13 @@ export const pullResumesFromWebDAV = async (
     return { status: "empty" };
   }
 
-  let snapshot: WebDAVSnapshot;
-  try {
-    const parsed = JSON.parse(remote.content) as unknown;
-    if (!isWebDAVSnapshot(parsed)) {
-      return { status: "error", message: "云端数据不是有效的备份文件" };
-    }
-    snapshot = parsed;
-  } catch (_error) {
+  let snapshot: WebDAVSnapshot | null = parseSnapshotFile(remote.content);
+  if (!snapshot) {
     return { status: "error", message: "云端数据不是有效的备份文件" };
   }
 
   const remoteExportedAtMs = parseTimestamp(snapshot.exportedAt) ?? Date.now();
+  const fallbackIso = new Date(remoteExportedAtMs).toISOString();
   const updateResumeFromFile = useResumeStore.getState().updateResumeFromFile;
 
   let synced = 0;
@@ -162,18 +223,10 @@ export const pullResumesFromWebDAV = async (
       skipped += 1;
       continue;
     }
-    // 云端文件可能来自旧版本或被手动编辑过，补全必需的时间字段，
-    // 避免列表页格式化 undefined 日期时报错。
-    const fallbackTime = new Date(remoteExportedAtMs).toISOString();
-    if (typeof resume.updatedAt !== "string" || Number.isNaN(Date.parse(resume.updatedAt))) {
-      resume.updatedAt = fallbackTime;
-    }
-    if (typeof resume.createdAt !== "string" || Number.isNaN(Date.parse(resume.createdAt))) {
-      resume.createdAt = resume.updatedAt;
-    }
+    const normalized = normalizeSnapshotResume(resume, fallbackIso);
     // 传入简历自身的 updatedAt 作为源时间，保证"较新者胜"的合并语义
-    const resumeUpdatedAt = parseTimestamp(resume.updatedAt) ?? remoteExportedAtMs;
-    if (updateResumeFromFile(resume, resumeUpdatedAt)) {
+    const resumeUpdatedAt = parseTimestamp(normalized.updatedAt) ?? remoteExportedAtMs;
+    if (updateResumeFromFile(normalized, resumeUpdatedAt)) {
       synced += 1;
     } else {
       skipped += 1;
@@ -194,4 +247,77 @@ export const pullResumesFromWebDAV = async (
   }
 
   return { status: "success", synced, skipped };
+};
+
+export type ListWebDAVBackupsResult =
+  | { status: "success"; entries: WebDAVBackupEntry[] }
+  | { status: "error"; message: string };
+
+export const listWebDAVBackupsForConfig = async (
+  config: WebDAVConfig
+): Promise<ListWebDAVBackupsResult> => {
+  const list = await listWebDAVBackups(config);
+  if (!list.ok || !list.entries) {
+    return { status: "error", message: list.message || "获取备份列表失败" };
+  }
+  return { status: "success", entries: list.entries };
+};
+
+export type RestoreWebDAVBackupResult =
+  | { status: "success"; count: number }
+  | { status: "error"; message: string };
+
+// 恢复 = 用该备份整体替换本地数据（与拉取的"合并"不同，恢复要能真正回滚）
+export const restoreWebDAVBackup = async (
+  config: WebDAVConfig,
+  fileName: string
+): Promise<RestoreWebDAVBackupResult> => {
+  const remote = await getWebDAVFileByName(config, fileName);
+  if (!remote.ok) {
+    return { status: "error", message: remote.message || "读取备份失败" };
+  }
+  if (remote.notFound || !remote.content) {
+    return { status: "error", message: "备份不存在或已被自动清理" };
+  }
+
+  const snapshot = parseSnapshotFile(remote.content);
+  if (!snapshot) {
+    return { status: "error", message: "备份数据不是有效的快照文件" };
+  }
+
+  const fallbackIso = new Date(parseTimestamp(snapshot.exportedAt) ?? Date.now()).toISOString();
+  const resumes: Record<string, ResumeData> = {};
+  for (const resume of Object.values(snapshot.resumes)) {
+    if (!isResumeData(resume)) continue;
+    const normalized = normalizeSnapshotResume(resume, fallbackIso);
+    resumes[normalized.id] = normalized;
+  }
+
+  const activeResumeId =
+    snapshot.activeResumeId && resumes[snapshot.activeResumeId]
+      ? snapshot.activeResumeId
+      : (Object.keys(resumes)[0] ?? null);
+
+  useResumeStore.setState({
+    resumes,
+    activeResumeId,
+    activeResume: activeResumeId ? resumes[activeResumeId] : null,
+  });
+
+  return { status: "success", count: Object.keys(resumes).length };
+};
+
+export type DeleteWebDAVBackupResult =
+  | { status: "success" }
+  | { status: "error"; message: string };
+
+export const deleteWebDAVBackup = async (
+  config: WebDAVConfig,
+  fileName: string
+): Promise<DeleteWebDAVBackupResult> => {
+  const deleted = await deleteWebDAVFileByName(config, fileName);
+  if (!deleted.ok) {
+    return { status: "error", message: deleted.message || "删除失败" };
+  }
+  return { status: "success" };
 };

@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 
 // 浏览器直连大多数 WebDAV 服务（坚果云、Nextcloud 等）会被 CORS 拦截，
 // 因此由服务端代为转发 WebDAV 请求。账号密码仅随请求转发，不在服务端存储。
-const ALLOWED_METHODS = new Set(["GET", "PUT", "PROPFIND", "MKCOL", "OPTIONS"]);
+const ALLOWED_METHODS = new Set(["GET", "PUT", "PROPFIND", "MKCOL", "DELETE", "OPTIONS"]);
 
 const FORWARD_HEADERS = new Set([
   "authorization",
