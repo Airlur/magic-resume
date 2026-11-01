@@ -1,9 +1,9 @@
 name: Deploy to Cloudflare
 
+# 此仓库通过 Vercel 部署；如需恢复 Cloudflare 自动部署，
+# 把触发条件改回 on.push.branches: [main] 并配置
+# CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID 两个 repository secrets。
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 jobs:

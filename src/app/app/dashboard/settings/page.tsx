@@ -19,6 +19,7 @@ import { syncResumesFromDirectory } from "@/utils/resumeFileSync";
 import { cn } from "@/lib/utils";
 import ThemeSettings from "./ThemeSettings";
 import LanguageSettings from "./LanguageSettings";
+import WebDAVSettings from "./WebDAVSettings";
 
 const SettingsPage = () => {
   const [directoryHandle, setDirectoryHandle] =
@@ -203,6 +204,8 @@ const SettingsPage = () => {
             </div>
           </div>
         </section>
+
+        <WebDAVSettings />
       </div>
     </div>
   );
