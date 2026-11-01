@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CloudCog,
   CloudUpload,
@@ -16,6 +16,7 @@ import { useTranslations } from "@/i18n/compat/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -78,6 +79,9 @@ const WebDAVSettings = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [conflictTime, setConflictTime] = useState<string | null>(null);
 
+  const [activeTab, setActiveTab] = useState("config");
+  // 备份历史懒加载：只有切到该标签时才请求一次，避免每次打开设置页都发请求
+  const historyLoadedRef = useRef(false);
   const [historyLimitInput, setHistoryLimitInput] = useState(String(WEBDAV_HISTORY_LIMIT_DEFAULT));
   const [backups, setBackups] = useState<WebDAVBackupEntry[] | null>(null);
   const [backupsLoading, setBackupsLoading] = useState(false);
@@ -145,12 +149,13 @@ const WebDAVSettings = () => {
     }
   };
 
-  useEffect(() => {
-    if (hydrated && configured) {
-      refreshBackups();
+  const handleTabChange = (value: string) => {
+    setActiveTab(value);
+    if (value === "history" && !historyLoadedRef.current) {
+      historyLoadedRef.current = true;
+      void refreshBackups();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, configured]);
+  };
 
   const handleTest = async () => {
     if (!requireConfig()) return;
@@ -187,7 +192,8 @@ const WebDAVSettings = () => {
             remoteExportedAt: result.exportedAt,
           }));
           toast.success(t("dashboard.settings.webdav.pushSuccess"));
-          await refreshBackups();
+          historyLoadedRef.current = true;
+          void refreshBackups();
           break;
         case "conflict": {
           const remoteTime = formatTime(result.remoteExportedAt);
@@ -283,8 +289,8 @@ const WebDAVSettings = () => {
 
   return (
     <section className="rounded-2xl border border-border/80 bg-white/90 p-6 shadow-[0_1px_2px_rgba(28,28,24,0.03),0_6px_20px_rgba(28,28,24,0.02)] dark:bg-card">
-      <div className="flex flex-col gap-6 xl:flex-row xl:items-start">
-        <div className="min-w-0 flex-1 space-y-5">
+      <Tabs value={activeTab} onValueChange={handleTabChange}>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex items-start gap-3.5">
             <div className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-secondary/70 text-foreground">
               <CloudCog className="h-4 w-4" />
@@ -336,115 +342,24 @@ const WebDAVSettings = () => {
             </div>
           </div>
 
-          <div className="space-y-3 rounded-xl border border-border/70 bg-background/40 p-4 dark:bg-secondary/20">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <History className="size-4 text-muted-foreground" />
-                <h3 className="text-sm font-semibold text-foreground">
-                  {t("dashboard.settings.webdav.historyTitle")}
-                </h3>
-                {backups && backups.length > 0 && (
-                  <span className="rounded-full bg-secondary/70 px-2 py-0.5 text-[11px] text-muted-foreground">
-                    {backups.length}
-                  </span>
-                )}
-              </div>
-              <button
-                type="button"
-                onClick={refreshBackups}
-                disabled={busy !== null}
-                className="inline-flex cursor-pointer items-center gap-1.5 text-xs font-medium text-primary transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <RefreshCw className={cn("size-3", backupsLoading && "animate-spin")} />
-                {t("dashboard.settings.webdav.refresh")}
-              </button>
-            </div>
-
-            <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-white/60 p-3 dark:bg-secondary/30">
-              <div className="min-w-0">
-                <p className="text-xs font-medium text-foreground sm:text-sm">
-                  {t("dashboard.settings.webdav.limitLabel")}
-                </p>
-                <p className="text-[11px] leading-relaxed text-muted-foreground">
-                  {t("dashboard.settings.webdav.limitHint")}
-                </p>
-              </div>
-              <Input
-                type="number"
-                min={5}
-                max={50}
-                value={historyLimitInput}
-                onChange={(event) => setHistoryLimitInput(event.target.value)}
-                onBlur={commitHistoryLimit}
-                disabled={!hydrated || busy !== null}
-                className="h-9 w-20 shrink-0 rounded-lg bg-background/80 text-center"
-              />
-            </div>
-
-            <div className="space-y-2">
-              {backups === null ? (
-                <div className="rounded-lg border border-dashed border-border/80 px-4 py-8 text-center">
-                  <p className="text-xs text-muted-foreground">
-                    {t("dashboard.settings.webdav.emptyHint")}
-                  </p>
-                </div>
-              ) : backups.length === 0 ? (
-                <div className="rounded-lg border border-dashed border-border/80 px-4 py-8 text-center">
-                  <p className="text-xs font-medium text-muted-foreground">
-                    {t("dashboard.settings.webdav.emptyTitle")}
-                  </p>
-                  <p className="mt-1 text-[11px] text-muted-foreground/80">
-                    {t("dashboard.settings.webdav.emptyHint")}
-                  </p>
-                </div>
-              ) : (
-                backups.map((entry) => {
-                  const time = formatTime(entry.timestamp);
-                  const size = formatBackupSize(entry.size);
-                  return (
-                    <div
-                      key={entry.fileName}
-                      className="flex items-center justify-between gap-2 rounded-lg border border-border/60 bg-background/60 px-3 py-2 dark:bg-secondary/30"
-                    >
-                      <div className="min-w-0">
-                        <p className="truncate text-xs font-medium text-foreground">{time}</p>
-                        <p className="truncate text-[11px] text-muted-foreground/80">
-                          {size ?? entry.fileName}
-                        </p>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={busy !== null}
-                          onClick={() => setPendingRestore(entry)}
-                          className="h-8 cursor-pointer rounded-lg px-2.5 text-[11px]"
-                        >
-                          <RotateCcw className="mr-1 size-3" />
-                          {t("dashboard.settings.webdav.restore")}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          disabled={busy !== null}
-                          onClick={() => setPendingDelete(entry)}
-                          aria-label={t("dashboard.settings.webdav.delete")}
-                          className="h-8 w-8 shrink-0 cursor-pointer rounded-lg text-muted-foreground hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
-                        >
-                          <Trash2 className="size-3.5" />
-                        </Button>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
+          <TabsList className="h-10 shrink-0 self-start rounded-xl bg-secondary/60 p-1 dark:bg-secondary/40">
+            <TabsTrigger
+              value="config"
+              className="h-8 cursor-pointer rounded-lg px-4 text-xs font-medium sm:text-sm"
+            >
+              {t("dashboard.settings.webdav.configTab")}
+            </TabsTrigger>
+            <TabsTrigger
+              value="history"
+              className="h-8 cursor-pointer rounded-lg px-4 text-xs font-medium sm:text-sm"
+            >
+              <History className="mr-1.5 size-3.5" />
+              {t("dashboard.settings.webdav.historyTab")}
+            </TabsTrigger>
+          </TabsList>
         </div>
 
-        <div className="w-full shrink-0 space-y-4 xl:max-w-[520px]">
+        <TabsContent value="config" className="mt-5 space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
             <div className="space-y-1.5 sm:col-span-2">
               <Label htmlFor="webdav-server" className="text-xs text-muted-foreground">
@@ -566,8 +481,107 @@ const WebDAVSettings = () => {
           <p className="text-[11px] leading-relaxed text-muted-foreground/70">
             {t("dashboard.settings.webdav.localOnlyHint")}
           </p>
-        </div>
-      </div>
+        </TabsContent>
+
+        <TabsContent value="history" className="mt-5 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs text-muted-foreground sm:text-sm">
+              {t("dashboard.settings.webdav.historyHint")}
+            </p>
+            <button
+              type="button"
+              onClick={refreshBackups}
+              disabled={busy !== null}
+              className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 text-xs font-medium text-primary transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw className={cn("size-3", backupsLoading && "animate-spin")} />
+              {t("dashboard.settings.webdav.refresh")}
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-border/70 bg-background/50 p-3.5 dark:bg-secondary/20">
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-foreground sm:text-sm">
+                {t("dashboard.settings.webdav.limitLabel")}
+              </p>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                {t("dashboard.settings.webdav.limitHint")}
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={5}
+              max={50}
+              value={historyLimitInput}
+              onChange={(event) => setHistoryLimitInput(event.target.value)}
+              onBlur={commitHistoryLimit}
+              disabled={!hydrated || busy !== null}
+              className="h-9 w-20 shrink-0 rounded-lg bg-background/80 text-center"
+            />
+          </div>
+
+          <div className="space-y-2">
+            {backups === null ? (
+              <div className="rounded-xl border border-dashed border-border/80 px-4 py-10 text-center">
+                <p className="text-xs text-muted-foreground">
+                  {t("dashboard.settings.webdav.emptyHint")}
+                </p>
+              </div>
+            ) : backups.length === 0 ? (
+              <div className="rounded-xl border border-dashed border-border/80 px-4 py-10 text-center">
+                <p className="text-xs font-medium text-muted-foreground">
+                  {t("dashboard.settings.webdav.emptyTitle")}
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground/80">
+                  {t("dashboard.settings.webdav.emptyHint")}
+                </p>
+              </div>
+            ) : (
+              backups.map((entry) => {
+                const time = formatTime(entry.timestamp);
+                const size = formatBackupSize(entry.size);
+                return (
+                  <div
+                    key={entry.fileName}
+                    className="flex items-center justify-between gap-2 rounded-xl border border-border/60 bg-background/60 px-3.5 py-2.5 dark:bg-secondary/20"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-medium text-foreground">{time}</p>
+                      <p className="truncate text-[11px] text-muted-foreground/80">
+                        {size ?? entry.fileName}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={busy !== null}
+                        onClick={() => setPendingRestore(entry)}
+                        className="h-8 cursor-pointer rounded-lg px-2.5 text-[11px]"
+                      >
+                        <RotateCcw className="mr-1 size-3" />
+                        {t("dashboard.settings.webdav.restore")}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        disabled={busy !== null}
+                        onClick={() => setPendingDelete(entry)}
+                        aria-label={t("dashboard.settings.webdav.delete")}
+                        className="h-8 w-8 shrink-0 cursor-pointer rounded-lg text-muted-foreground hover:border-destructive/30 hover:bg-destructive/10 hover:text-destructive"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </TabsContent>
+      </Tabs>
 
       <AlertDialog open={conflictTime !== null} onOpenChange={(open) => !open && setConflictTime(null)}>
         <AlertDialogContent>
